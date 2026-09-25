@@ -10,7 +10,14 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gio, GLib, Gtk
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gst", "1.0")
+from gi.repository import Gdk, Gio, GLib, Gst, Gtk
+
+Gst.init(None)
+
+PREVIEW_WIDTH = 640
+PREVIEW_HEIGHT = 360
 
 
 class TimelapseWindow(Gtk.ApplicationWindow):
@@ -22,7 +29,13 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.timer_id = None
         self.is_running = False
         self.is_capturing = False
+        self.is_closing = False
         self.capture_count = 0
+        self.preview_pipeline = None
+        self.preview_sink = None
+        self.preview_poll_id = None
+        self.preview_bus = None
+        self.preview_bus_handler = None
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         root.set_margin_top(20)
@@ -70,15 +83,95 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         root.append(self.state_label)
         root.append(self.count_label)
 
-        preview_frame = Gtk.Frame(label="最新画像")
+        preview_frame = Gtk.Frame(label="カメラプレビュー / 最新画像")
         preview_frame.set_vexpand(True)
         root.append(preview_frame)
         self.picture = Gtk.Picture()
         self.picture.set_can_shrink(True)
         self.picture.set_keep_aspect_ratio(True)
-        preview_frame.set_child(self.picture)
+        self.picture.set_hexpand(True)
+        self.picture.set_vexpand(True)
+        preview_aspect = Gtk.AspectFrame.new(
+            0.5, 0.5, PREVIEW_WIDTH / PREVIEW_HEIGHT, False
+        )
+        preview_aspect.set_hexpand(True)
+        preview_aspect.set_vexpand(True)
+        preview_aspect.set_child(self.picture)
+        preview_frame.set_child(preview_aspect)
 
         self.connect("close-request", self.on_close_request)
+
+    def start_preview(self):
+        if self.is_closing or self.preview_pipeline is not None or self.is_capturing:
+            return
+        pipeline_description = (
+            "v4l2src device=/dev/video0 ! videoconvert ! videoscale ! videorate ! "
+            f"video/x-raw,width={PREVIEW_WIDTH},height={PREVIEW_HEIGHT},framerate=5/1 ! "
+            "jpegenc quality=75 ! appsink name=preview_sink max-buffers=1 drop=true sync=false"
+        )
+        try:
+            pipeline = Gst.parse_launch(pipeline_description)
+        except GLib.Error as error:
+            self.state_label.set_text(f"カメラプレビューを準備できません: {error.message}")
+            return
+
+        self.preview_pipeline = pipeline
+        self.preview_sink = pipeline.get_by_name("preview_sink")
+        self.preview_bus = pipeline.get_bus()
+        self.preview_bus.add_signal_watch()
+        self.preview_bus_handler = self.preview_bus.connect(
+            "message::error", self.on_preview_error
+        )
+        result = pipeline.set_state(Gst.State.PLAYING)
+        if result == Gst.StateChangeReturn.FAILURE:
+            self.stop_preview()
+            self.state_label.set_text("カメラプレビューを開始できません。カメラデバイスを確認してください。")
+            return
+        self.preview_poll_id = GLib.timeout_add(100, self.update_preview)
+        if not self.is_running:
+            self.state_label.set_text("停止中（ライブプレビュー）")
+
+    def stop_preview(self):
+        if self.preview_poll_id is not None:
+            GLib.source_remove(self.preview_poll_id)
+            self.preview_poll_id = None
+        if self.preview_bus is not None:
+            if self.preview_bus_handler is not None:
+                self.preview_bus.disconnect(self.preview_bus_handler)
+                self.preview_bus_handler = None
+            self.preview_bus.remove_signal_watch()
+            self.preview_bus = None
+        if self.preview_pipeline is not None:
+            self.preview_pipeline.set_state(Gst.State.NULL)
+            self.preview_pipeline = None
+            self.preview_sink = None
+
+    def update_preview(self):
+        if self.preview_sink is None or self.is_closing:
+            self.preview_poll_id = None
+            return GLib.SOURCE_REMOVE
+        sample = self.preview_sink.emit("try-pull-sample", 0)
+        if sample is not None:
+            buffer = sample.get_buffer()
+            success, mapped = buffer.map(Gst.MapFlags.READ)
+            if success:
+                try:
+                    texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(mapped.data))
+                    self.picture.set_paintable(texture)
+                    if not self.is_running and not self.is_capturing:
+                        self.state_label.set_text("停止中（ライブプレビュー）")
+                except GLib.Error as error:
+                    self.state_label.set_text(f"プレビュー画像を表示できません: {error.message}")
+                finally:
+                    buffer.unmap(mapped)
+        return GLib.SOURCE_CONTINUE
+
+    def on_preview_error(self, _bus, message):
+        error, _debug = message.parse_error()
+        self.stop_preview()
+        if not self.is_closing:
+            self.state_label.set_text(f"カメラプレビューのエラー: {error.message}")
+        return GLib.SOURCE_REMOVE
 
     def load_interval(self):
         try:
@@ -147,9 +240,10 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def capture_once(self):
-        if self.is_capturing:
+        if self.is_capturing or self.is_closing:
             return
         self.is_capturing = True
+        self.stop_preview()
         now = datetime.now()
         output_path = self.output_dir / f"{now:%Y%m%d_%H%M%S}.jpg"
         # Keep the documented second-resolution name when possible, and add
@@ -184,15 +278,21 @@ class TimelapseWindow(Gtk.ApplicationWindow):
 
     def on_capture_succeeded(self, output_path):
         self.is_capturing = False
+        if self.is_closing:
+            return GLib.SOURCE_REMOVE
         self.capture_count += 1
         self.count_label.set_text(f"撮影枚数: {self.capture_count}")
         self.picture.set_filename(str(output_path))
-        self.state_label.set_text("撮影中" if self.is_running else "停止中")
+        self.state_label.set_text("撮影中" if self.is_running else "停止中（ライブプレビュー）")
+        self.start_preview()
         return GLib.SOURCE_REMOVE
 
     def on_capture_failed(self, message):
         self.is_capturing = False
+        if self.is_closing:
+            return GLib.SOURCE_REMOVE
         self.state_label.set_text(message)
+        self.start_preview()
         return GLib.SOURCE_REMOVE
 
     def on_stop(self, _button):
@@ -204,7 +304,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_button.set_sensitive(True)
         self.interval_spin.set_sensitive(True)
         if not self.is_capturing:
-            self.state_label.set_text("停止中")
+            self.state_label.set_text("停止中（ライブプレビュー）")
 
     def stop_capture_timer(self):
         if self.timer_id is not None:
@@ -215,8 +315,10 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.state_label.set_text(message)
 
     def on_close_request(self, _window):
+        self.is_closing = True
         self.stop_capture_timer()
         self.is_running = False
+        self.stop_preview()
         return False
 
 
@@ -229,6 +331,7 @@ class TimelapseApplication(Gtk.Application):
         if window is None:
             window = TimelapseWindow(self)
         window.present()
+        window.start_preview()
 
 
 if __name__ == "__main__":
