@@ -55,9 +55,12 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_entry.set_hexpand(True)
         self.folder_button = Gtk.Button(label="選択…")
         self.folder_button.connect("clicked", self.on_choose_folder)
+        self.new_folder_button = Gtk.Button(label="新規")
+        self.new_folder_button.connect("clicked", self.on_create_new_folder)
         settings.attach(folder_label, 0, 0, 1, 1)
         settings.attach(self.folder_entry, 1, 0, 1, 1)
         settings.attach(self.folder_button, 2, 0, 1, 1)
+        settings.attach(self.new_folder_button, 3, 0, 1, 1)
 
         interval_label = Gtk.Label(label="撮影間隔（秒）", xalign=0)
         self.interval_spin = Gtk.SpinButton.new_with_range(0.1, 86400, 0.1)
@@ -212,6 +215,28 @@ class TimelapseWindow(Gtk.ApplicationWindow):
                 self.folder_entry.set_text(folder.get_path())
         chooser.destroy()
 
+    def on_create_new_folder(self, _button):
+        parent_dir = Path.home() / "Pictures" / "timelapse"
+        folder_name = datetime.now().strftime("%Y%m%d-%H%M%S")
+        new_dir = parent_dir / folder_name
+        suffix = 1
+        try:
+            parent_dir.mkdir(parents=True, exist_ok=True)
+            while True:
+                try:
+                    new_dir.mkdir()
+                    break
+                except FileExistsError:
+                    new_dir = parent_dir / f"{folder_name}-{suffix:03d}"
+                    suffix += 1
+            self.folder_entry.set_text(str(new_dir))
+            self.capture_count = 0
+            self.count_label.set_text("撮影枚数: 0")
+            self.picture.set_paintable(None)
+            self.state_label.set_text(f"新しい保存先を作成しました: {new_dir}")
+        except OSError as error:
+            self.show_error(f"新しい保存先を作成できません: {error}")
+
     def on_start(self, _button):
         output_dir = Path(self.folder_entry.get_text()).expanduser()
         if not self.folder_entry.get_text().strip():
@@ -232,6 +257,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.stop_button.set_sensitive(True)
         self.folder_entry.set_sensitive(False)
         self.folder_button.set_sensitive(False)
+        self.new_folder_button.set_sensitive(False)
         self.interval_spin.set_sensitive(False)
         self.state_label.set_text("撮影中")
         self.capture_once()
@@ -307,6 +333,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.stop_button.set_sensitive(False)
         self.folder_entry.set_sensitive(True)
         self.folder_button.set_sensitive(True)
+        self.new_folder_button.set_sensitive(True)
         self.interval_spin.set_sensitive(True)
         if not self.is_capturing:
             self.state_label.set_text("停止中（ライブプレビュー）")
