@@ -58,24 +58,53 @@ lines.append(f"file '{escaped}'")
 pathlib.Path(manifest).write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
-echo "Analyzing ${#files[@]} images at ${fps} fps..."
-ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
-    -vf "vidstabdetect=shakiness=1:accuracy=15:stepsize=4:mincontrast=0.3:result=$transforms" \
-    -f null -
+# echo "Analyzing ${#files[@]} images at ${fps} fps..."
+# ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
+#     -vf "vidstabdetect=shakiness=1:accuracy=15:stepsize=4:mincontrast=0.3:result=$transforms" \
+#     -f null -
 
-echo "Stabilizing and encoding: $output"
+# echo "Stabilizing and encoding: $output"
+# if [[ -n "$bgm" ]]; then
+#     ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" -stream_loop -1 -i "$bgm" \
+#         -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
+#         -map 0:v:0 -map 1:a:0 -af "volume=${volume}" -shortest -r "$fps" \
+#         -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac "$output"
+# else
+#     ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
+#         -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
+#         -r "$fps" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$output"
+# fi
+
+echo "Encoding ${#files[@]} images at ${fps} fps..."
+
 if [[ -n "$bgm" ]]; then
-    ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" -stream_loop -1 -i "$bgm" \
-        -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
-        -map 0:v:0 -map 1:a:0 -af "volume=${volume}" -shortest -r "$fps" \
-        -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac "$output"
+    ffmpeg -hide_banner -y \
+        -f concat -safe 0 -i "$manifest" \
+        -stream_loop -1 -i "$bgm" \
+        -map 0:v:0 -map 1:a:0 \
+        -af "volume=${volume}" \
+        -shortest \
+        -r "$fps" \
+        -c:v libx264 \
+        -crf 18 \
+        -preset medium \
+        -pix_fmt yuv420p \
+        -c:a aac \
+        "$output"
 else
-    ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
-        -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
-        -r "$fps" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$output"
+    ffmpeg -hide_banner -y \
+        -f concat -safe 0 -i "$manifest" \
+        -r "$fps" \
+        -c:v libx264 \
+        -crf 18 \
+        -preset medium \
+        -pix_fmt yuv420p \
+        "$output"
 fi
 
 echo "Done: $output"
+
+# echo "Done: $output"
 
 # Upload the completed video with the last captured image as its thumbnail.
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
