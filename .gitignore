@@ -52,3 +52,5 @@ Thumbs.db
 *.tmp
 *.swp
 *.swo
+
+client_secret.json

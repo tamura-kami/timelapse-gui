@@ -135,6 +135,24 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         actions.append(self.stop_button)
         actions.append(self.video_button)
 
+        bgm_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        root.append(bgm_row)
+        self.bgm_button = Gtk.Button(label="BGMを選択…")
+        self.bgm_button.connect("clicked", self.on_choose_bgm)
+        bgm_row.append(self.bgm_button)
+        self.bgm_label = Gtk.Label(label="BGMなし", xalign=0)
+        self.bgm_label.set_hexpand(True)
+        bgm_row.append(self.bgm_label)
+        self.bgm_clear_button = Gtk.Button(label="BGMなし")
+        self.bgm_clear_button.connect("clicked", self.on_clear_bgm)
+        bgm_row.append(self.bgm_clear_button)
+        bgm_row.append(Gtk.Label(label="音量（%）"))
+        self.bgm_volume = Gtk.SpinButton.new_with_range(0, 200, 5)
+        self.bgm_volume.set_value(50)
+        self.bgm_volume.set_numeric(True)
+        bgm_row.append(self.bgm_volume)
+        self.bgm_path = None
+
         self.state_label = Gtk.Label(label="停止中", xalign=0)
         self.count_label = Gtk.Label(label="撮影枚数: 0", xalign=0)
         root.append(self.state_label)
@@ -445,8 +463,40 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         dialog = Gtk.FileDialog()
         dialog.set_title("動画の保存先")
         dialog.set_initial_folder(Gio.File.new_for_path(str(image_dir.parent)))
-        dialog.set_initial_name(f"{image_dir.name}_stabilized.mp4")
+        dialog.set_initial_name(f"{image_dir.name}.mp4")
         dialog.save(self, None, self.on_video_output_chosen, (script_path, image_dir))
+
+    def on_choose_bgm(self, _button):
+        dialog = Gtk.FileDialog()
+        dialog.set_title("BGMファイルを選択")
+        audio_filter = Gtk.FileFilter()
+        audio_filter.set_name("音声ファイル")
+        for mime_type in ("audio/mpeg", "audio/ogg", "audio/wav", "audio/flac", "audio/mp4"):
+            audio_filter.add_mime_type(mime_type)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(audio_filter)
+        dialog.set_filters(filters)
+        dialog.open(self, None, self.on_bgm_chosen, None)
+
+    def on_bgm_chosen(self, dialog, result, _task_data):
+        try:
+            audio_file = dialog.open_finish(result)
+        except GLib.Error as error:
+            if not error.matches(Gtk.DialogError.quark(), Gtk.DialogError.CANCELLED) and not error.matches(
+                Gtk.DialogError.quark(), Gtk.DialogError.DISMISSED
+            ):
+                self.show_error(f"BGMを選択できません: {error.message}")
+            return
+        audio_path = audio_file.get_path()
+        if audio_path is None:
+            self.show_error("ローカルの音声ファイルを選択してください。")
+            return
+        self.bgm_path = Path(audio_path)
+        self.bgm_label.set_text(self.bgm_path.name)
+
+    def on_clear_bgm(self, _button):
+        self.bgm_path = None
+        self.bgm_label.set_text("BGMなし")
 
     def on_video_output_chosen(self, dialog, result, task_data):
         script_path, image_dir = task_data
@@ -476,14 +526,17 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.state_label.set_text("動画を作成中です…")
         threading.Thread(
             target=self.run_video_encoder,
-            args=(script_path, image_dir, output_path),
+            args=(script_path, image_dir, output_path, self.bgm_path, self.bgm_volume.get_value() / 100),
             daemon=True,
         ).start()
 
-    def run_video_encoder(self, script_path, image_dir, output_path):
+    def run_video_encoder(self, script_path, image_dir, output_path, bgm_path, bgm_volume):
         try:
+            command = [str(script_path), str(image_dir), "10", str(output_path)]
+            if bgm_path is not None:
+                command.extend((str(bgm_path), f"{bgm_volume:.2f}"))
             result = subprocess.run(
-                [str(script_path), str(image_dir), "10", str(output_path)],
+                command,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -513,6 +566,9 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_button.set_sensitive(True)
         self.new_folder_button.set_sensitive(True)
         self.interval_spin.set_sensitive(True)
+        self.bgm_button.set_sensitive(True)
+        self.bgm_clear_button.set_sensitive(True)
+        self.bgm_volume.set_sensitive(True)
         self.set_camera_scales_sensitive(True)
         self.state_label.set_text(message)
         return GLib.SOURCE_REMOVE
@@ -524,6 +580,9 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_button.set_sensitive(sensitive)
         self.new_folder_button.set_sensitive(sensitive)
         self.interval_spin.set_sensitive(sensitive)
+        self.bgm_button.set_sensitive(sensitive)
+        self.bgm_clear_button.set_sensitive(sensitive)
+        self.bgm_volume.set_sensitive(sensitive)
         self.set_camera_scales_sensitive(sensitive)
 
     def set_camera_scales_sensitive(self, sensitive):

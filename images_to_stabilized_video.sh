@@ -2,20 +2,27 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <image-folder> [fps] [output.mp4]" >&2
-    echo "Example: $0 data/20260926-1402 10 data/20260926-1402_stabilized.mp4" >&2
+    echo "Usage: $0 <image-folder> [fps] [output.mp4] [bgm-audio] [volume]" >&2
+    echo "Example: $0 data/20260926-1402 10 output.mp4 music.mp3 0.50" >&2
     exit 2
 }
 
-[[ $# -ge 1 && $# -le 3 ]] || usage
+[[ $# -ge 1 && $# -le 5 ]] || usage
 image_dir=$1
 fps=${2:-10}
 output=${3:-"${image_dir%/}_stabilized.mp4"}
+bgm=${4:-}
+volume=${5:-0.50}
 
 command -v ffmpeg >/dev/null 2>&1 || { echo "Error: ffmpeg not found in PATH" >&2; exit 1; }
 [[ -d "$image_dir" ]] || { echo "Error: image folder not found: $image_dir" >&2; exit 1; }
 [[ "$fps" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Error: fps must be a positive number" >&2; exit 2; }
 awk -v fps="$fps" 'BEGIN { exit !(fps > 0) }' || { echo "Error: fps must be greater than zero" >&2; exit 2; }
+if [[ -n "$bgm" ]]; then
+    [[ -f "$bgm" ]] || { echo "Error: BGM file not found: $bgm" >&2; exit 1; }
+    [[ "$volume" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Error: volume must be a number from 0 to 2" >&2; exit 2; }
+    awk -v volume="$volume" 'BEGIN { exit !(volume >= 0 && volume <= 2) }' || { echo "Error: volume must be between 0 and 2" >&2; exit 2; }
+fi
 
 available_filters=$(ffmpeg -hide_banner -filters 2>&1)
 [[ "$available_filters" == *vidstabdetect* && "$available_filters" == *vidstabtransform* ]] || {
@@ -57,8 +64,15 @@ ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
     -f null -
 
 echo "Stabilizing and encoding: $output"
-ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
-    -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
-    -r "$fps" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$output"
+if [[ -n "$bgm" ]]; then
+    ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" -stream_loop -1 -i "$bgm" \
+        -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
+        -map 0:v:0 -map 1:a:0 -af "volume=${volume}" -shortest -r "$fps" \
+        -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac "$output"
+else
+    ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
+        -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
+        -r "$fps" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$output"
+fi
 
 echo "Done: $output"
