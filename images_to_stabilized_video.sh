@@ -28,9 +28,10 @@ trap 'rm -rf "$tmpdir"' EXIT
 manifest="$tmpdir/images.ffconcat"
 transforms="$tmpdir/transforms.trf"
 
-# Use ffconcat so timestamped filenames and gaps in numbering are supported.
-# Sorting in the C locale gives stable, bytewise filename order.
-mapfile -d '' files < <(find "$image_dir" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' \) -print0 | LC_ALL=C sort -z)
+# Use ffconcat so numbered filenames and gaps in numbering are supported.
+# Version sorting orders 00002.jpg before 00010.jpg and remains deterministic
+# for older timestamp-named images in folders created before numbered names.
+mapfile -d '' files < <(find "$image_dir" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' \) -print0 | LC_ALL=C sort -z -V)
 ((${#files[@]} > 0)) || { echo "Error: no JPG/JPEG images found in $image_dir" >&2; exit 1; }
 
 python3 - "$manifest" "$fps" "${files[@]}" <<'PY'
@@ -57,7 +58,7 @@ ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
 
 echo "Stabilizing and encoding: $output"
 ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
-    -vf "vidstabtransform=input=$transforms:smoothing=10:zoom=0:optzoom=0:crop=black" \
+    -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
     -r "$fps" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$output"
 
 echo "Done: $output"

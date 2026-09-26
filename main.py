@@ -542,14 +542,15 @@ class TimelapseWindow(Gtk.ApplicationWindow):
             return
         self.is_capturing = True
         self.stop_preview()
-        now = datetime.now()
-        output_path = self.output_dir / f"{now:%Y%m%d_%H%M%S}.jpg"
-        # Keep the documented second-resolution name when possible, and add
-        # milliseconds when a sub-second capture would otherwise overwrite it.
-        if output_path.exists():
-            output_path = self.output_dir / (
-                f"{now:%Y%m%d_%H%M%S}_{now.microsecond // 1000:03d}.jpg"
-            )
+        # Continue numbering from the highest numbered JPG in this folder,
+        # including images left by an earlier app session.
+        existing_numbers = [
+            int(match.group(1))
+            for path in self.output_dir.glob("*.jpg")
+            if (match := re.fullmatch(r"(\d+)\.jpg", path.name))
+        ]
+        next_number = max(existing_numbers, default=0) + 1
+        output_path = self.output_dir / f"{next_number:05d}.jpg"
         threading.Thread(
             target=self.run_fswebcam, args=(output_path,), daemon=True
         ).start()
