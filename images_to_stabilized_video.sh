@@ -52,7 +52,7 @@ PY
 
 echo "Analyzing ${#files[@]} images at ${fps} fps..."
 ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
-    -vf "vidstabdetect=shakiness=2:accuracy=15:stepsize=4:mincontrast=0.3:result=$transforms" \
+    -vf "vidstabdetect=shakiness=1:accuracy=15:stepsize=4:mincontrast=0.3:result=$transforms" \
     -f null -
 
 echo "Stabilizing and encoding: $output"
