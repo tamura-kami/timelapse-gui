@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+STABILIZER=/home/ayaka/procjets/stabilizer/build/video_marker_offline
+UPLOAD_YOUTUBE=false
+
 usage() {
     echo "Usage: $0 <image-folder> [fps] [output.mp4] [bgm-audio] [volume]" >&2
     echo "Example: $0 data/20260926-1402 10 output.mp4 music.mp3 0.50" >&2
@@ -10,9 +13,12 @@ usage() {
 [[ $# -ge 1 && $# -le 5 ]] || usage
 image_dir=$1
 fps=${2:-10}
-output=${3:-"${image_dir%/}_stabilized.mp4"}
+output=${3:-"${image_dir%/}.mp4"}
 bgm=${4:-}
 volume=${5:-0.50}
+echo $image_dir
+echo $fps
+echo $output
 
 command -v ffmpeg >/dev/null 2>&1 || { echo "Error: ffmpeg not found in PATH" >&2; exit 1; }
 [[ -d "$image_dir" ]] || { echo "Error: image folder not found: $image_dir" >&2; exit 1; }
@@ -58,23 +64,6 @@ lines.append(f"file '{escaped}'")
 pathlib.Path(manifest).write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
-# echo "Analyzing ${#files[@]} images at ${fps} fps..."
-# ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
-#     -vf "vidstabdetect=shakiness=1:accuracy=15:stepsize=4:mincontrast=0.3:result=$transforms" \
-#     -f null -
-
-# echo "Stabilizing and encoding: $output"
-# if [[ -n "$bgm" ]]; then
-#     ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" -stream_loop -1 -i "$bgm" \
-#         -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
-#         -map 0:v:0 -map 1:a:0 -af "volume=${volume}" -shortest -r "$fps" \
-#         -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac "$output"
-# else
-#     ffmpeg -hide_banner -y -f concat -safe 0 -i "$manifest" \
-#         -vf "vidstabtransform=input=$transforms:smoothing=5:zoom=0:optzoom=0:crop=black" \
-#         -r "$fps" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$output"
-# fi
-
 echo "Encoding ${#files[@]} images at ${fps} fps..."
 
 if [[ -n "$bgm" ]]; then
@@ -102,14 +91,19 @@ else
         "$output"
 fi
 
+
 echo "Done: $output"
+output2="${output%.*}_stabilized.${output##*.}"
+echo "$output2"
+"$STABILIZER" "$output" "$output2" --crop-valid 
+echo "Stabilized: $output2"
 
-# echo "Done: $output"
-
-# Upload the completed video with the last captured image as its thumbnail.
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-python=${script_dir}/venv/bin/python
-[[ -x "$python" ]] || { echo "Error: project virtualenv Python not found: $python" >&2; exit 1; }
-title=$(basename -- "$output")
-echo "Uploading to YouTube: $title"
-"$python" "$script_dir/upload_youtube.py" "$output" "${files[-1]}" "$title"
+if [ "$UPLOAD_YOUTUBE" = true ]; then
+    # Upload the completed video with the last captured image as its thumbnail.
+    script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+    python=${script_dir}/venv/bin/python
+    [[ -x "$python" ]] || { echo "Error: project virtualenv Python not found: $python" >&2; exit 1; }
+    title=$(basename -- "$output")
+    echo "Uploading to YouTube: $title"
+    "$python" "$script_dir/upload_youtube.py" "$output2" "${files[-1]}" "$title"
+fi

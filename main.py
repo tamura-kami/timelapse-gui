@@ -148,10 +148,14 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         bgm_row.append(self.bgm_clear_button)
         bgm_row.append(Gtk.Label(label="音量（%）"))
         self.bgm_volume = Gtk.SpinButton.new_with_range(0, 200, 5)
-        self.bgm_volume.set_value(50)
+        saved_bgm_path, saved_bgm_volume = self.load_bgm_settings()
+        self.bgm_volume.set_value(saved_bgm_volume)
         self.bgm_volume.set_numeric(True)
+        self.bgm_volume.connect("value-changed", self.on_bgm_volume_changed)
         bgm_row.append(self.bgm_volume)
-        self.bgm_path = None
+        self.bgm_path = saved_bgm_path
+        if self.bgm_path is not None:
+            self.bgm_label.set_text(self.bgm_path.name)
 
         self.state_label = Gtk.Label(label="停止中", xalign=0)
         self.count_label = Gtk.Label(label="撮影枚数: 0", xalign=0)
@@ -263,6 +267,41 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
         return 10
+
+    def load_bgm_settings(self):
+        try:
+            settings = json.loads(self.interval_config_path.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict):
+                return None, 50
+            saved_path = settings.get("bgm_path")
+            bgm_path = Path(saved_path) if isinstance(saved_path, str) and saved_path else None
+            if bgm_path is not None and not bgm_path.is_file():
+                bgm_path = None
+            volume = float(settings.get("bgm_volume", 50))
+            if not math.isfinite(volume) or not 0 <= volume <= 200:
+                volume = 50
+            return bgm_path, volume
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None, 50
+
+    def save_bgm_settings(self):
+        try:
+            self.interval_config_path.parent.mkdir(parents=True, exist_ok=True)
+            settings = {}
+            try:
+                settings = json.loads(self.interval_config_path.read_text(encoding="utf-8"))
+                if not isinstance(settings, dict):
+                    settings = {}
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+            settings["bgm_path"] = str(self.bgm_path) if self.bgm_path is not None else ""
+            settings["bgm_volume"] = self.bgm_volume.get_value()
+            self.interval_config_path.write_text(json.dumps(settings), encoding="utf-8")
+        except OSError as error:
+            GLib.warning(f"BGM設定を保存できません: {error}")
+
+    def on_bgm_volume_changed(self, _spin_button):
+        self.save_bgm_settings()
 
     def get_camera_controls(self):
         controls = {}
@@ -493,10 +532,12 @@ class TimelapseWindow(Gtk.ApplicationWindow):
             return
         self.bgm_path = Path(audio_path)
         self.bgm_label.set_text(self.bgm_path.name)
+        self.save_bgm_settings()
 
     def on_clear_bgm(self, _button):
         self.bgm_path = None
         self.bgm_label.set_text("BGMなし")
+        self.save_bgm_settings()
 
     def on_video_output_chosen(self, dialog, result, task_data):
         script_path, image_dir = task_data
