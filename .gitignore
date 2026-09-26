@@ -54,3 +54,4 @@ Thumbs.db
 *.swo
 
 client_secret.json
+token.json

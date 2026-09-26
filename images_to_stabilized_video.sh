@@ -76,3 +76,11 @@ else
 fi
 
 echo "Done: $output"
+
+# Upload the completed video with the last captured image as its thumbnail.
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+python=${script_dir}/venv/bin/python
+[[ -x "$python" ]] || { echo "Error: project virtualenv Python not found: $python" >&2; exit 1; }
+title=$(basename -- "$output")
+echo "Uploading to YouTube: $title"
+"$python" "$script_dir/upload_youtube.py" "$output" "${files[-1]}" "$title"
