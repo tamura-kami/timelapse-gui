@@ -17,8 +17,8 @@ command -v ffmpeg >/dev/null 2>&1 || { echo "Error: ffmpeg not found in PATH" >&
 [[ "$fps" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Error: fps must be a positive number" >&2; exit 2; }
 awk -v fps="$fps" 'BEGIN { exit !(fps > 0) }' || { echo "Error: fps must be greater than zero" >&2; exit 2; }
 
-command -v ffmpeg >/dev/null 2>&1
-ffmpeg -hide_banner -filters 2>&1 | grep -q 'vidstabdetect' || {
+available_filters=$(ffmpeg -hide_banner -filters 2>&1)
+[[ "$available_filters" == *vidstabdetect* && "$available_filters" == *vidstabtransform* ]] || {
     echo "Error: this ffmpeg build does not provide vidstabdetect (libvidstab)" >&2
     exit 1
 }
