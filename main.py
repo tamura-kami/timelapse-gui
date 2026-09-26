@@ -2,6 +2,7 @@
 """GTK4 GUI for capturing a simple webcam timelapse."""
 
 import json
+import math
 import subprocess
 import threading
 from datetime import datetime
@@ -59,7 +60,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         settings.attach(self.folder_button, 2, 0, 1, 1)
 
         interval_label = Gtk.Label(label="撮影間隔（秒）", xalign=0)
-        self.interval_spin = Gtk.SpinButton.new_with_range(0.5, 86400, 0.5)
+        self.interval_spin = Gtk.SpinButton.new_with_range(0.1, 86400, 0.1)
         self.interval_spin.set_digits(1)
         self.interval_config_path = Path(GLib.get_user_config_dir()) / "timelapse-gui" / "settings.json"
         self.interval_spin.set_value(self.load_interval())
@@ -177,7 +178,11 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         try:
             settings = json.loads(self.interval_config_path.read_text(encoding="utf-8"))
             interval = float(settings.get("interval_seconds", 10))
-            if 0.5 <= interval <= 86400 and round(interval * 2) == interval * 2:
+            if (
+                math.isfinite(interval)
+                and 0.1 <= interval <= 86400
+                and math.isclose(interval * 10, round(interval * 10), abs_tol=1e-9)
+            ):
                 return interval
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
