@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+from glob import glob
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,9 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.is_video_encoding = False
         self.is_closing = False
         self.capture_count = 0
+        self.interval_config_path = Path(GLib.get_user_config_dir()) / "timelapse-gui" / "settings.json"
+        self.camera_devices = self.find_camera_devices()
+        self.camera_device = self.load_camera_device()
         self.camera_controls = self.get_camera_controls()
         self.camera_scales = {}
         self.camera_write_timer_ids = {}
@@ -72,11 +76,25 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         interval_label = Gtk.Label(label="撮影間隔（秒）", xalign=0)
         self.interval_spin = Gtk.SpinButton.new_with_range(0.1, 86400, 0.1)
         self.interval_spin.set_digits(1)
-        self.interval_config_path = Path(GLib.get_user_config_dir()) / "timelapse-gui" / "settings.json"
         self.interval_spin.set_value(self.load_interval())
         self.interval_spin.connect("value-changed", self.on_interval_changed)
         settings.attach(interval_label, 0, 1, 1, 1)
         settings.attach(self.interval_spin, 1, 1, 1, 1)
+
+        camera_label = Gtk.Label(label="カメラ", xalign=0)
+        self.camera_dropdown = Gtk.DropDown.new_from_strings(
+            [f"{device}" for device in self.camera_devices]
+        )
+        self.camera_dropdown.set_hexpand(True)
+        selected_index = (
+            self.camera_devices.index(self.camera_device)
+            if self.camera_device in self.camera_devices
+            else 0
+        )
+        self.camera_dropdown.set_selected(selected_index)
+        self.camera_dropdown.connect("notify::selected", self.on_camera_selected)
+        settings.attach(camera_label, 0, 2, 1, 1)
+        settings.attach(self.camera_dropdown, 1, 2, 3, 1)
 
         control_labels = {
             "brightness": "明るさ",
@@ -86,7 +104,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         camera_controls_box = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL, spacing=12
         )
-        settings.attach(camera_controls_box, 0, 2, 4, 1)
+        settings.attach(camera_controls_box, 0, 3, 4, 1)
         for control, label_text in control_labels.items():
             control_box = Gtk.Box(
                 orientation=Gtk.Orientation.VERTICAL, spacing=2
@@ -186,7 +204,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         if self.is_closing or self.preview_pipeline is not None or self.is_capturing:
             return
         pipeline_description = (
-            "v4l2src device=/dev/video0 ! videoconvert ! videoscale ! videorate ! "
+            f"v4l2src device={self.camera_device} ! videoconvert ! videoscale ! videorate ! "
             f"video/x-raw,width={PREVIEW_WIDTH},height={PREVIEW_HEIGHT},framerate=5/1 ! "
             "jpegenc quality=75 ! appsink name=preview_sink max-buffers=1 drop=true sync=false"
         )
@@ -211,6 +229,62 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.preview_poll_id = GLib.timeout_add(100, self.update_preview)
         if not self.is_running:
             self.state_label.set_text("停止中（ライブプレビュー）")
+
+    @staticmethod
+    def find_camera_devices():
+        devices = glob("/dev/video[0-9]*")
+        return sorted(
+            devices,
+            key=lambda path: int(re.search(r"(\d+)$", path).group(1)),
+        )
+
+    def load_camera_device(self):
+        try:
+            settings = json.loads(self.interval_config_path.read_text(encoding="utf-8"))
+            saved_device = (
+                settings.get("camera_device") if isinstance(settings, dict) else None
+            )
+            if saved_device in self.camera_devices:
+                return saved_device
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return self.camera_devices[0] if self.camera_devices else "/dev/video0"
+
+    def save_camera_device(self):
+        try:
+            self.interval_config_path.parent.mkdir(parents=True, exist_ok=True)
+            settings = {}
+            try:
+                settings = json.loads(self.interval_config_path.read_text(encoding="utf-8"))
+                if not isinstance(settings, dict):
+                    settings = {}
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+            settings["camera_device"] = self.camera_device
+            self.interval_config_path.write_text(json.dumps(settings), encoding="utf-8")
+        except OSError as error:
+            GLib.warning(f"カメラ選択を保存できません: {error}")
+
+    def on_camera_selected(self, dropdown, _parameter):
+        index = dropdown.get_selected()
+        if index >= len(self.camera_devices):
+            return
+        device = self.camera_devices[index]
+        if device == self.camera_device:
+            return
+        self.camera_device = device
+        self.save_camera_device()
+        self.stop_preview()
+        self.camera_controls = self.get_camera_controls()
+        for control, scale in self.camera_scales.items():
+            info = self.camera_controls.get(control)
+            scale.set_sensitive(info is not None and not self.is_running)
+            if info:
+                minimum, maximum, step, current = info
+                scale.set_range(minimum, maximum)
+                scale.set_increments(step, step)
+                scale.set_value(current)
+        self.start_preview()
 
     def stop_preview(self):
         if self.preview_poll_id is not None:
@@ -309,7 +383,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
             return controls
         try:
             result = subprocess.run(
-                ["v4l2-ctl", "-d", "/dev/video0", "--list-ctrls"],
+                ["v4l2-ctl", "-d", self.camera_device, "--list-ctrls"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -378,7 +452,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
     def set_camera_control(self, control, value):
         try:
             result = subprocess.run(
-                ["v4l2-ctl", "-d", "/dev/video0", f"--set-ctrl={control}={value}"],
+                ["v4l2-ctl", "-d", self.camera_device, f"--set-ctrl={control}={value}"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -475,6 +549,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_button.set_sensitive(False)
         self.new_folder_button.set_sensitive(False)
         self.interval_spin.set_sensitive(False)
+        self.camera_dropdown.set_sensitive(False)
         self.video_button.set_sensitive(False)
         self.set_camera_scales_sensitive(False)
         self.state_label.set_text("撮影中")
@@ -607,6 +682,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_button.set_sensitive(True)
         self.new_folder_button.set_sensitive(True)
         self.interval_spin.set_sensitive(True)
+        self.camera_dropdown.set_sensitive(True)
         self.bgm_button.set_sensitive(True)
         self.bgm_clear_button.set_sensitive(True)
         self.bgm_volume.set_sensitive(True)
@@ -621,6 +697,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_button.set_sensitive(sensitive)
         self.new_folder_button.set_sensitive(sensitive)
         self.interval_spin.set_sensitive(sensitive)
+        self.camera_dropdown.set_sensitive(sensitive)
         self.bgm_button.set_sensitive(sensitive)
         self.bgm_clear_button.set_sensitive(sensitive)
         self.bgm_volume.set_sensitive(sensitive)
@@ -658,7 +735,15 @@ class TimelapseWindow(Gtk.ApplicationWindow):
     def run_fswebcam(self, output_path):
         try:
             result = subprocess.run(
-                ["fswebcam", "--no-banner", "--resolution", "1280x720", str(output_path)],
+                [
+                    "fswebcam",
+                    "--device",
+                    self.camera_device,
+                    "--no-banner",
+                    "--resolution",
+                    "1280x720",
+                    str(output_path),
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -703,6 +788,7 @@ class TimelapseWindow(Gtk.ApplicationWindow):
         self.folder_button.set_sensitive(True)
         self.new_folder_button.set_sensitive(True)
         self.interval_spin.set_sensitive(True)
+        self.camera_dropdown.set_sensitive(True)
         self.set_camera_scales_sensitive(True)
         self.video_button.set_sensitive(True)
         if not self.is_capturing:
